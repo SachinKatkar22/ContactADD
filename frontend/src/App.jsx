@@ -1,7 +1,6 @@
 import { useState } from 'react';
 
-// In development, Vite proxies /api to the backend and avoids hard-coded host/port issues.
-const API_BASE = 'https://contactadd.onrender.com';
+const API_BASE ='https://contactadd.onrender.com';
 
 function Icon({ name, size = 20 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
@@ -9,6 +8,7 @@ function Icon({ name, size = 20 }) {
     shield: <><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z"/><path d="m9 12 2 2 4-4"/></>,
     cloud: <><path d="M20 16.2A4.5 4.5 0 0 0 18 7.5 6 6 0 0 0 6.3 9a4.5 4.5 0 0 0 .7 9H18"/><path d="m12 12-3 3m3-3 3 3m-3-3v8"/></>,
     download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/></>,
+    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/></>,
     user: <><circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0 1 14 0"/></>,
     lock: <><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></>,
     check: <path d="m5 12 4 4L19 6"/>,
@@ -18,10 +18,10 @@ function Icon({ name, size = 20 }) {
   return <svg {...common}>{paths[name]}</svg>;
 }
 
-async function request(path, options = {}) {
+async function request(path, options = {}, token = '') {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
+    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers },
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
@@ -35,19 +35,52 @@ function escapeVCard(value = '') {
 function contactsToVCard(contacts) {
   return contacts.map((contact) => {
     const names = Array.isArray(contact.name) ? contact.name.filter(Boolean) : [];
-    const displayName = names[0] || 'Unknown contact';
-    const lines = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${escapeVCard(displayName)}`];
+    const lines = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${escapeVCard(names[0] || 'Unknown contact')}`];
     for (const name of names) lines.push(`N:${escapeVCard(name)};;;;`);
-    for (const phone of (Array.isArray(contact.tel) ? contact.tel : []).filter(Boolean)) lines.push(`TEL;TYPE=VOICE:${escapeVCard(phone)}`);
-    for (const email of (Array.isArray(contact.email) ? contact.email : []).filter(Boolean)) lines.push(`EMAIL:${escapeVCard(email)}`);
+    for (const phone of (contact.tel || []).filter(Boolean)) lines.push(`TEL;TYPE=VOICE:${escapeVCard(phone)}`);
+    for (const email of (contact.email || []).filter(Boolean)) lines.push(`EMAIL:${escapeVCard(email)}`);
     lines.push('END:VCARD');
     return lines.join('\r\n');
   }).join('\r\n');
 }
 
+function unescapeVCard(value = '') {
+  return value.replace(/\\n/gi, '\n').replace(/\\([\\,;:])/g, '$1');
+}
+
+function parseVCardFile(text) {
+  const unfolded = text.replace(/\r?\n[ \t]/g, '').replace(/=\r?\n/g, '');
+  return unfolded.split(/BEGIN:VCARD/i).slice(1).map((card) => {
+    const contact = { name: [], tel: [], email: [] };
+    for (const line of card.split(/\r?\n/)) {
+      const match = line.match(/^(?:item\d+\.)?(FN|N|TEL|EMAIL)(?:;[^:]*)?:(.*)$/i);
+      if (!match) continue;
+      const [, field, raw] = match;
+      const value = unescapeVCard(raw.trim());
+      if (!value) continue;
+      if (field.toUpperCase() === 'FN') contact.name.push(value);
+      else if (field.toUpperCase() === 'N' && contact.name.length === 0) {
+        const [family = '', given = '', middle = ''] = value.split(';');
+        contact.name.push([given, middle, family].filter(Boolean).join(' '));
+      } else if (field.toUpperCase() === 'TEL') contact.tel.push(value);
+      else if (field.toUpperCase() === 'EMAIL') contact.email.push(value);
+    }
+    contact.name = [...new Set(contact.name)];
+    contact.tel = [...new Set(contact.tel)];
+    contact.email = [...new Set(contact.email)];
+    return contact;
+  }).filter((contact) => contact.name.length || contact.tel.length || contact.email.length);
+}
+
 function App() {
+  const [authMode, setAuthMode] = useState('login');
   const [usernameInput, setUsernameInput] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [currentUser, setCurrentUser] = useState('');
+  const [sessionToken, setSessionToken] = useState('');
+  const [retentionDays, setRetentionDays] = useState('7');
+  const [expiresAt, setExpiresAt] = useState(null);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState(null);
   const [contactCount, setContactCount] = useState(null);
@@ -60,75 +93,103 @@ function App() {
     finally { setBusy(''); }
   };
 
-  const handleLogin = (event) => {
+  const handleAuth = (event) => {
     event.preventDefault();
-    const username = usernameInput.trim();
-    if (!username) return announce('error', 'Enter a username to continue.');
-    return run('login', async () => {
-      const data = await request('/api/login', { method: 'POST', body: JSON.stringify({ username }) });
-      setCurrentUser(data.username);
-      announce(data.isExpired ? 'info' : 'success', data.isExpired ? 'Your previous plan expired and stored contacts were cleared.' : 'You’re signed in.');
+    if (authMode === 'register' && password !== confirmPassword) return announce('error', 'The passwords do not match.');
+    return run('auth', async () => {
+      const data = await request(`/api/${authMode === 'register' ? 'register' : 'login'}`, {
+        method: 'POST', body: JSON.stringify({ username: usernameInput.trim(), password }),
+      });
+      const vault = await request(`/api/get-contacts/${encodeURIComponent(data.username)}`, {}, data.token);
+      setCurrentUser(data.username); setSessionToken(data.token); setContactCount(vault.contacts.length); setExpiresAt(vault.expiresAt);
+      setPassword(''); setConfirmPassword('');
+      announce('success', authMode === 'register' ? 'Account created. Your vault is ready.' : 'You’re signed in.');
     });
   };
 
-  const syncContacts = () => run('sync', async () => {
-    if (!window.isSecureContext) {
-      throw new Error('This page is not using a secure HTTPS connection. Open the HTTPS version of your site.');
-    }
-    if (window.top !== window.self) {
-      throw new Error('The contact picker can only open when the app is displayed as a normal page, not inside an embedded frame.');
-    }
-    if (!('contacts' in navigator) || !('ContactsManager' in window) || typeof navigator.contacts?.select !== 'function') {
-      throw new Error('This browser does not support web contact selection. On Android, open this page in the latest Chrome browser and tap Sync again.');
-    }
+  const toggleAuthMode = () => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setPassword(''); setConfirmPassword(''); setNotice(null); };
 
-    // Open the picker directly from the button tap. Waiting for getProperties()
-    // first may use up the browser's short-lived user-gesture permission.
+  const requireRetention = () => {
+    const days = Number(retentionDays);
+    if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error('Choose between 1 and 3650 days for contact storage.');
+    return days;
+  };
+
+  const saveContacts = async (contacts, days) => {
+    const data = await request('/api/sync-contacts', {
+      method: 'POST', body: JSON.stringify({ contacts, retentionDays: days }),
+    }, sessionToken);
+    setContactCount(data.count); setExpiresAt(data.expiresAt);
+    announce('success', `${data.count} contacts saved. They’ll be automatically deleted after ${retentionDays} days.`);
+  };
+
+  const syncContacts = () => run('sync', async () => {
+    const days = requireRetention();
+    if (!window.isSecureContext) throw new Error('Open the HTTPS version of this site to use phone contacts.');
+    if (window.top !== window.self) throw new Error('Open this app as a normal page, not inside an embedded frame.');
+    if (!('contacts' in navigator) || !('ContactsManager' in window) || typeof navigator.contacts?.select !== 'function') {
+      throw new Error('This browser does not support the phone contact picker. Use Chrome on Android, or import a .vcf file containing your contacts.');
+    }
     let selected;
-    try {
-      selected = await navigator.contacts.select(['name', 'tel', 'email'], { multiple: true });
-    } catch (error) {
+    try { selected = await navigator.contacts.select(['name', 'tel', 'email'], { multiple: true }); }
+    catch (error) {
       if (error.name === 'AbortError') { announce('info', 'Contact selection cancelled.'); return; }
-      if (error.name === 'NotAllowedError') throw new Error('The browser blocked the picker. Tap Sync selected contacts again, then choose contacts in the browser dialog.');
+      if (error.name === 'NotAllowedError') throw new Error('The browser blocked the picker. Tap Select contacts again and choose contacts in the browser dialog.');
       throw error;
     }
     if (!selected.length) { announce('info', 'No contacts selected.'); return; }
-    const data = await request('/api/sync-contacts', { method: 'POST', body: JSON.stringify({ username: currentUser, contacts: selected }) });
-    setContactCount(data.count); announce('success', `${data.count} contact${data.count === 1 ? '' : 's'} saved to your vault.`);
+    await saveContacts(selected, days);
   });
 
+  const importVCard = (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) return announce('error', 'That contact file is larger than 8 MB. Export a smaller set and try again.');
+    return run('import', async () => {
+      const days = requireRetention();
+      const contacts = parseVCardFile(await file.text());
+      if (!contacts.length) throw new Error('No contacts were found. Choose a valid .vcf contacts export.');
+      await saveContacts(contacts, days);
+    });
+  };
+
   const exportContacts = () => run('export', async () => {
-    const data = await request(`/api/get-contacts/${encodeURIComponent(currentUser)}`);
-    if (!Array.isArray(data.contacts) || data.contacts.length === 0) { setContactCount(0); announce('info', 'Your vault is empty. Sync contacts before exporting.'); return; }
+    const data = await request(`/api/get-contacts/${encodeURIComponent(currentUser)}`, {}, sessionToken);
+    if (!data.contacts.length) { setContactCount(0); setExpiresAt(null); announce('info', 'Your vault is empty. Select or import contacts first.'); return; }
     const blob = new Blob([contactsToVCard(data.contacts)], { type: 'text/vcard;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = `${currentUser.replace(/[^a-z0-9_-]/gi, '_')}_contacts.vcf`;
     document.body.appendChild(link); link.click(); link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setContactCount(data.contacts.length); announce('success', `Exported ${data.contacts.length} contacts as a vCard file.`);
+    setContactCount(data.contacts.length); setExpiresAt(data.expiresAt); announce('success', `Exported ${data.contacts.length} contacts as a vCard file.`);
   });
 
-  const signOut = () => { setCurrentUser(''); setContactCount(null); setNotice(null); };
+  const signOut = () => { setCurrentUser(''); setSessionToken(''); setContactCount(null); setExpiresAt(null); setNotice(null); };
+  const expirationLabel = expiresAt ? new Date(expiresAt).toLocaleString() : 'No contacts saved yet';
 
   return <main className="page-shell">
     <header className="topbar"><a className="brand" href="#top" aria-label="Kinship home"><span className="brand-mark"><Icon name="user" size={19}/></span><span>kinship<span className="brand-dot">.</span></span></a><div className="topbar-note"><span className="secure-dot"/> Private by design</div></header>
     <div className="layout" id="top">
       <section className="intro"><div className="eyebrow"><span/> CONTACTS, WHEREVER YOU GO</div><h1>Your people,<br/><em>always close.</em></h1><p className="intro-copy">Keep a safe copy of your contacts and take them with you when you move to a new device.</p>
-        <div className="feature-list"><div className="feature"><span className="feature-icon"><Icon name="shield"/></span><span><b>Your contacts stay yours</b><small>Sync only the contacts you choose.</small></span></div><div className="feature"><span className="feature-icon"><Icon name="sync"/></span><span><b>Move in a few taps</b><small>Export a standard vCard file for your next phone.</small></span></div></div>
-        <div className="privacy-note"><Icon name="lock" size={17}/><span>Contact access is requested only when you choose to sync.</span></div>
+        <div className="feature-list"><div className="feature"><span className="feature-icon"><Icon name="shield"/></span><span><b>Your contacts stay yours</b><small>Sync only the contacts you choose.</small></span></div><div className="feature"><span className="feature-icon"><Icon name="sync"/></span><span><b>Move in a few taps</b><small>Select contacts or import a single file.</small></span></div></div>
+        <div className="privacy-note"><Icon name="lock" size={17}/><span>Choose how many days your contacts stay in the vault.</span></div>
       </section>
       <section className="panel-wrap" aria-label="Contact vault">
-        {!currentUser ? <form className="panel" onSubmit={handleLogin}>
+        {!currentUser ? <form className="panel" onSubmit={handleAuth}>
           <div className="panel-heading"><span className="step-label">YOUR VAULT</span><span className="panel-icon"><Icon name="user"/></span></div>
-          <h2>Welcome back</h2><p className="panel-copy">Sign in or create a vault with your username.</p>
-          <label className="field-label" htmlFor="username">Username</label><div className="input-wrap"><Icon name="user" size={18}/><input id="username" autoComplete="username" maxLength={80} value={usernameInput} onChange={(event) => setUsernameInput(event.target.value)} placeholder="e.g. alexmorgan" required/></div>
-          <button className="button button-primary" type="submit" disabled={Boolean(busy)}>{busy === 'login' ? <><span className="spinner"/> Connecting…</> : <>Continue <Icon name="arrow" size={17}/></>}</button>
-          <p className="form-foot"><Icon name="lock" size={15}/> Username only. This is not password-protected.</p>
+          <h2>{authMode === 'register' ? 'Create your account' : 'Welcome back'}</h2><p className="panel-copy">{authMode === 'register' ? 'Choose a username and password to get started.' : 'Sign in with your username and password.'}</p>
+          <label className="field-label" htmlFor="username">Username</label><div className="input-wrap"><Icon name="user" size={18}/><input id="username" autoComplete="username" minLength={3} maxLength={40} pattern="[A-Za-z0-9_.-]+" value={usernameInput} onChange={(event) => setUsernameInput(event.target.value)} placeholder="Choose a username" required/></div>
+          <label className="field-label password-label" htmlFor="password">Password</label><div className="input-wrap"><Icon name="lock" size={18}/><input id="password" type="password" autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} minLength={8} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 8 characters" required/></div>
+          {authMode === 'register' && <><label className="field-label password-label" htmlFor="confirm-password">Confirm password</label><div className="input-wrap"><Icon name="lock" size={18}/><input id="confirm-password" type="password" autoComplete="new-password" minLength={8} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Enter your password again" required/></div></>}
+          <button className="button button-primary" type="submit" disabled={Boolean(busy)}>{busy === 'auth' ? <><span className="spinner"/> Please wait…</> : <>{authMode === 'register' ? 'Create account' : 'Sign in'} <Icon name="arrow" size={17}/></>}</button>
+          <p className="form-foot"><Icon name="lock" size={15}/> Passwords are stored as secure hashes.</p>
+          <button className="auth-toggle" type="button" onClick={toggleAuthMode}>{authMode === 'register' ? 'Already have an account? Sign in' : 'New here? Create an account'}</button>
         </form> : <div className="panel">
           <div className="panel-heading"><span className="step-label">YOUR VAULT</span><button className="text-button" type="button" onClick={signOut}>Sign out</button></div>
-          <h2>Hi, {currentUser}</h2><p className="panel-copy">Your contact vault is ready.</p>
-          <div className="vault-ready"><span className="active-check"><Icon name="check" size={16}/></span><div><b>Your vault is ready</b><small>Sync and export contacts whenever you need.</small></div></div>
-          <div className="action-stack"><button className="button button-primary" type="button" disabled={Boolean(busy)} onClick={syncContacts}>{busy === 'sync' ? <><span className="spinner"/> Opening contacts…</> : <><Icon name="cloud"/> Sync selected contacts</>}</button><button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={exportContacts}>{busy === 'export' ? <><span className="spinner"/> Preparing file…</> : <><Icon name="download"/> Export contacts (.vcf)</>}</button></div>
-          <div className="vault-meta"><span>{contactCount === null ? 'Contacts are only saved when you sync.' : `${contactCount} ${contactCount === 1 ? 'contact' : 'contacts'} in latest action`}</span></div>
+          <h2>Hi, {currentUser}</h2><p className="panel-copy">Choose contacts and set how long they stay online.</p>
+          <div className="retention-card"><label className="field-label" htmlFor="retention-days">Delete contacts after</label><div className="select-wrap"><input id="retention-days" type="number" min="1" max="3650" step="1" inputMode="numeric" value={retentionDays} onChange={(event) => setRetentionDays(event.target.value)}/><span>days</span></div><p className="retention-help">Saved contacts will be automatically deleted after this period. A new sync starts the timer again.</p></div>
+          <div className="vault-ready"><span className="active-check"><Icon name="check" size={16}/></span><div><b>{contactCount === null ? 'Your vault is ready' : `${contactCount} contacts in your vault`}</b><small>{expirationLabel}</small></div></div>
+          <div className="action-stack"><button className="button button-primary" type="button" disabled={Boolean(busy)} onClick={syncContacts}>{busy === 'sync' ? <><span className="spinner"/> Opening contacts…</> : <><Icon name="cloud"/> Select contacts</>}</button><button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={() => document.getElementById('vcard-import').click()}>{busy === 'import' ? <><span className="spinner"/> Importing contacts…</> : <><Icon name="upload"/> Import many contacts (.vcf)</>}</button><input id="vcard-import" className="visually-hidden" type="file" accept=".vcf,text/vcard,text/x-vcard" onChange={importVCard} aria-label="Choose a vCard contacts file"/><small className="bulk-import-hint">For all contacts at once, export a .vcf file from your phone’s Contacts app and import it here.</small><button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={exportContacts}>{busy === 'export' ? <><span className="spinner"/> Preparing file…</> : <><Icon name="download"/> Export contacts (.vcf)</>}</button></div>
         </div>}
         {notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'} aria-live="polite">{notice.kind === 'success' ? <Icon name="check" size={17}/> : <span className="notice-mark">{notice.kind === 'error' ? '!' : 'i'}</span>}<span>{notice.message}</span></div>}
         <div className="support-note">Need help? <a href="mailto:support@example.com">Contact support <Icon name="arrow" size={13}/></a></div>
