@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE ='https://contactadd.onrender.com';
 
 function Icon({ name, size = 20 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
@@ -178,7 +178,7 @@ function App() {
         {!currentUser ? <form className="panel" onSubmit={handleAuth}>
           <div className="panel-heading"><span className="step-label">YOUR VAULT</span><span className="panel-icon"><Icon name="user"/></span></div>
           <h2>{authMode === 'register' ? 'Create your account' : 'Welcome back'}</h2><p className="panel-copy">{authMode === 'register' ? 'Choose a username and password to get started.' : 'Sign in with your username and password.'}</p>
-          <label className="field-label" htmlFor="username">Username</label><div className="input-wrap"><Icon name="user" size={18}/><input id="username" autoComplete="username" minLength={3} maxLength={40} pattern="[A-Za-z0-9_.-]+" value={usernameInput} onChange={(event) => setUsernameInput(event.target.value)} placeholder="Choose a username" required/></div>
+          <label className="field-label" htmlFor="username">Username</label><div className="input-wrap"><Icon name="user" size={18}/><input id="username" autoComplete="username" minLength={3} maxLength={40} pattern={"[A-Za-z0-9_.\\-]+"} value={usernameInput} onChange={(event) => setUsernameInput(event.target.value)} placeholder="Choose a username" required/></div>
           <label className="field-label password-label" htmlFor="password">Password</label><div className="input-wrap"><Icon name="lock" size={18}/><input id="password" type="password" autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} minLength={8} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 8 characters" required/></div>
           {authMode === 'register' && <><label className="field-label password-label" htmlFor="confirm-password">Confirm password</label><div className="input-wrap"><Icon name="lock" size={18}/><input id="confirm-password" type="password" autoComplete="new-password" minLength={8} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Enter your password again" required/></div></>}
           <button className="button button-primary" type="submit" disabled={Boolean(busy)}>{busy === 'auth' ? <><span className="spinner"/> Please wait…</> : <>{authMode === 'register' ? 'Create account' : 'Sign in'} <Icon name="arrow" size={17}/></>}</button>
