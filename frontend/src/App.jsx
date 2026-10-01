@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-const API_BASE ='https://contactadd.onrender.com';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 function Icon({ name, size = 20 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
