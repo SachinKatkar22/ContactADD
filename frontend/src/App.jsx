@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 // In development, Vite proxies /api to the backend and avoids hard-coded host/port issues.
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE = 'https://contactadd.onrender.com';
 
 function Icon({ name, size = 20 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
