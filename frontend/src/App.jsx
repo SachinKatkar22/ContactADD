@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
-const API_BASE ='https://contactadd.onrender.com';
+const API_BASE = 'https://contactadd.onrender.com';
 
 function Icon({ name, size = 20 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
@@ -14,6 +14,7 @@ function Icon({ name, size = 20 }) {
     check: <path d="m5 12 4 4L19 6"/>,
     arrow: <><path d="M7 17 17 7M7 7h10v10"/></>,
     sync: <><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.6-2L20 12M4 12l2.8 5a7 7 0 0 0 11.6-2"/></>,
+    card: <><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></>
   };
   return <svg {...common}>{paths[name]}</svg>;
 }
@@ -85,6 +86,17 @@ function App() {
   const [notice, setNotice] = useState(null);
   const [contactCount, setContactCount] = useState(null);
 
+  useEffect(() => {
+    const queryParams = new URLSearchParams(window.location.search);
+    if (queryParams.get('payment') === 'success') {
+      setNotice({ kind: 'success', message: 'Payment successful! Your vault is now active.' });
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (queryParams.get('payment') === 'failed') {
+      setNotice({ kind: 'error', message: 'Payment failed or was cancelled.' });
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
   const announce = (kind, message) => setNotice({ kind, message });
   const run = async (key, action) => {
     setBusy(key); setNotice(null);
@@ -103,11 +115,14 @@ function App() {
       const vault = await request(`/api/get-contacts/${encodeURIComponent(data.username)}`, {}, data.token);
       setCurrentUser(data.username); setSessionToken(data.token); setContactCount(vault.contacts.length); setExpiresAt(vault.expiresAt);
       setPassword(''); setConfirmPassword('');
-      announce('success', authMode === 'register' ? 'Account created. Your vault is ready.' : 'You’re signed in.');
+      announce('success', authMode === 'register' ? 'Account created. Set your storage duration to begin.' : 'You’re signed in.');
     });
   };
 
   const toggleAuthMode = () => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setPassword(''); setConfirmPassword(''); setNotice(null); };
+
+  const isVaultActive = expiresAt && new Date(expiresAt) > new Date();
+  const totalPrice = (Number(retentionDays) || 0) * 20;
 
   const requireRetention = () => {
     const days = Number(retentionDays);
@@ -115,16 +130,16 @@ function App() {
     return days;
   };
 
-  const saveContacts = async (contacts, days) => {
+  const saveContacts = async (contacts) => {
     const data = await request('/api/sync-contacts', {
-      method: 'POST', body: JSON.stringify({ contacts, retentionDays: days }),
+      method: 'POST', body: JSON.stringify({ contacts }),
     }, sessionToken);
     setContactCount(data.count); setExpiresAt(data.expiresAt);
-    announce('success', `${data.count} contacts saved. They’ll be automatically deleted after ${retentionDays} days.`);
+    announce('success', `${data.count} contacts successfully saved to your active vault.`);
   };
 
   const syncContacts = () => run('sync', async () => {
-    const days = requireRetention();
+    if (!isVaultActive) throw new Error('Your storage plan has expired. Please pay to renew.');
     if (!window.isSecureContext) throw new Error('Open the HTTPS version of this site to use phone contacts.');
     if (window.top !== window.self) throw new Error('Open this app as a normal page, not inside an embedded frame.');
     if (!('contacts' in navigator) || !('ContactsManager' in window) || typeof navigator.contacts?.select !== 'function') {
@@ -138,7 +153,7 @@ function App() {
       throw error;
     }
     if (!selected.length) { announce('info', 'No contacts selected.'); return; }
-    await saveContacts(selected, days);
+    await saveContacts(selected);
   });
 
   const importVCard = (event) => {
@@ -147,16 +162,16 @@ function App() {
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) return announce('error', 'That contact file is larger than 8 MB. Export a smaller set and try again.');
     return run('import', async () => {
-      const days = requireRetention();
+      if (!isVaultActive) throw new Error('Your storage plan has expired. Please pay to renew.');
       const contacts = parseVCardFile(await file.text());
       if (!contacts.length) throw new Error('No contacts were found. Choose a valid .vcf contacts export.');
-      await saveContacts(contacts, days);
+      await saveContacts(contacts);
     });
   };
 
   const exportContacts = () => run('export', async () => {
     const data = await request(`/api/get-contacts/${encodeURIComponent(currentUser)}`, {}, sessionToken);
-    if (!data.contacts.length) { setContactCount(0); setExpiresAt(null); announce('info', 'Your vault is empty. Select or import contacts first.'); return; }
+    if (!data.contacts.length) { setContactCount(0); setExpiresAt(data.expiresAt); announce('info', 'Your vault is empty.'); return; }
     const blob = new Blob([contactsToVCard(data.contacts)], { type: 'text/vcard;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = `${currentUser.replace(/[^a-z0-9_-]/gi, '_')}_contacts.vcf`;
@@ -164,15 +179,27 @@ function App() {
     setContactCount(data.contacts.length); setExpiresAt(data.expiresAt); announce('success', `Exported ${data.contacts.length} contacts as a vCard file.`);
   });
 
+  const payWithPhonePe = () => run('pay', async () => {
+    const days = requireRetention();
+    const data = await request('/api/pay/initiate', {
+      method: 'POST', body: JSON.stringify({ retentionDays: days })
+    }, sessionToken);
+    if (data.paymentUrl) {
+      window.location.href = data.paymentUrl;
+    } else {
+      throw new Error('Failed to retrieve PhonePe payment URL.');
+    }
+  });
+
   const signOut = () => { setCurrentUser(''); setSessionToken(''); setContactCount(null); setExpiresAt(null); setNotice(null); };
-  const expirationLabel = expiresAt ? new Date(expiresAt).toLocaleString() : 'No contacts saved yet';
+  const expirationLabel = isVaultActive ? `Active until: ${new Date(expiresAt).toLocaleString()}` : 'Vault expired or inactive. Please pay to store contacts.';
 
   return <main className="page-shell">
     <header className="topbar"><a className="brand" href="#top" aria-label="Kinship home"><span className="brand-mark"><Icon name="user" size={19}/></span><span>kinship<span className="brand-dot">.</span></span></a><div className="topbar-note"><span className="secure-dot"/> Private by design</div></header>
     <div className="layout" id="top">
       <section className="intro"><div className="eyebrow"><span/> CONTACTS, WHEREVER YOU GO</div><h1>Your people,<br/><em>always close.</em></h1><p className="intro-copy">Keep a safe copy of your contacts and take them with you when you move to a new device.</p>
         <div className="feature-list"><div className="feature"><span className="feature-icon"><Icon name="shield"/></span><span><b>Your contacts stay yours</b><small>Sync only the contacts you choose.</small></span></div><div className="feature"><span className="feature-icon"><Icon name="sync"/></span><span><b>Move in a few taps</b><small>Select contacts or import a single file.</small></span></div></div>
-        <div className="privacy-note"><Icon name="lock" size={17}/><span>Choose how many days your contacts stay in the vault.</span></div>
+        <div className="privacy-note"><Icon name="lock" size={17}/><span>Plans cost ₹20 per day. Days are locked during active periods.</span></div>
       </section>
       <section className="panel-wrap" aria-label="Contact vault">
         {!currentUser ? <form className="panel" onSubmit={handleAuth}>
@@ -186,10 +213,59 @@ function App() {
           <button className="auth-toggle" type="button" onClick={toggleAuthMode}>{authMode === 'register' ? 'Already have an account? Sign in' : 'New here? Create an account'}</button>
         </form> : <div className="panel">
           <div className="panel-heading"><span className="step-label">YOUR VAULT</span><button className="text-button" type="button" onClick={signOut}>Sign out</button></div>
-          <h2>Hi, {currentUser}</h2><p className="panel-copy">Choose contacts and set how long they stay online.</p>
-          <div className="retention-card"><label className="field-label" htmlFor="retention-days">Delete contacts after</label><div className="select-wrap"><input id="retention-days" type="number" min="1" max="3650" step="1" inputMode="numeric" value={retentionDays} onChange={(event) => setRetentionDays(event.target.value)}/><span>days</span></div><p className="retention-help">Saved contacts will be automatically deleted after this period. A new sync starts the timer again.</p></div>
-          <div className="vault-ready"><span className="active-check"><Icon name="check" size={16}/></span><div><b>{contactCount === null ? 'Your vault is ready' : `${contactCount} contacts in your vault`}</b><small>{expirationLabel}</small></div></div>
-          <div className="action-stack"><button className="button button-primary" type="button" disabled={Boolean(busy)} onClick={syncContacts}>{busy === 'sync' ? <><span className="spinner"/> Opening contacts…</> : <><Icon name="cloud"/> Select contacts</>}</button><button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={() => document.getElementById('vcard-import').click()}>{busy === 'import' ? <><span className="spinner"/> Importing contacts…</> : <><Icon name="upload"/> Import many contacts (.vcf)</>}</button><input id="vcard-import" className="visually-hidden" type="file" accept=".vcf,text/vcard,text/x-vcard" onChange={importVCard} aria-label="Choose a vCard contacts file"/><small className="bulk-import-hint">For all contacts at once, export a .vcf file from your phone’s Contacts app and import it here.</small><button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={exportContacts}>{busy === 'export' ? <><span className="spinner"/> Preparing file…</> : <><Icon name="download"/> Export contacts (.vcf)</>}</button></div>
+          <h2>Hi, {currentUser}</h2><p className="panel-copy">Set your retention period (₹20/day) and complete payment to unlock contact storage.</p>
+          
+          <div className="retention-card">
+            <label className="field-label" htmlFor="retention-days">Store contacts for (₹20 / day)</label>
+            <div className="select-wrap">
+              <input 
+                id="retention-days" 
+                type="number" 
+                min="1" 
+                max="3650" 
+                step="1" 
+                inputMode="numeric" 
+                value={retentionDays} 
+                disabled={isVaultActive || Boolean(busy)} 
+                onChange={(event) => setRetentionDays(event.target.value)}
+              />
+              <span>days</span>
+            </div>
+            <p className="retention-help">
+              {isVaultActive 
+                ? 'Your days are locked until your current plan expires.' 
+                : `Total cost: ₹${totalPrice} (${retentionDays || 0} days × ₹20)`}
+            </p>
+          </div>
+
+          <div className="vault-ready">
+            <span className="active-check"><Icon name={isVaultActive ? 'check' : 'lock'} size={16}/></span>
+            <div>
+              <b>{isVaultActive ? `${contactCount ?? 0} contacts in your vault` : 'Vault Payment Required'}</b>
+              <small>{expirationLabel}</small>
+            </div>
+          </div>
+
+          <div className="action-stack">
+            {!isVaultActive ? (
+              <button className="button button-primary" type="button" disabled={Boolean(busy)} onClick={payWithPhonePe}>
+                {busy === 'pay' ? <><span className="spinner"/> Redirecting to PhonePe…</> : <><Icon name="card"/> Pay ₹{totalPrice} with PhonePe</>}
+              </button>
+            ) : (
+              <>
+                <button className="button button-primary" type="button" disabled={Boolean(busy)} onClick={syncContacts}>
+                  {busy === 'sync' ? <><span className="spinner"/> Opening contacts…</> : <><Icon name="cloud"/> Select contacts</>}
+                </button>
+                <button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={() => document.getElementById('vcard-import').click()}>
+                  {busy === 'import' ? <><span className="spinner"/> Importing contacts…</> : <><Icon name="upload"/> Import contacts (.vcf)</>}
+                </button>
+                <input id="vcard-import" className="visually-hidden" type="file" accept=".vcf,text/vcard,text/x-vcard" onChange={importVCard} aria-label="Choose a vCard contacts file"/>
+                <button className="button button-secondary" type="button" disabled={Boolean(busy)} onClick={exportContacts}>
+                  {busy === 'export' ? <><span className="spinner"/> Preparing file…</> : <><Icon name="download"/> Export contacts (.vcf)</>}
+                </button>
+              </>
+            )}
+          </div>
         </div>}
         {notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'} aria-live="polite">{notice.kind === 'success' ? <Icon name="check" size={17}/> : <span className="notice-mark">{notice.kind === 'error' ? '!' : 'i'}</span>}<span>{notice.message}</span></div>}
         <div className="support-note">Need help? <a href="mailto:support@example.com">Contact support <Icon name="arrow" size={13}/></a></div>
