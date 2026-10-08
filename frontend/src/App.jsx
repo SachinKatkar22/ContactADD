@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import QR from '..//src/assets/QR.jpeg'
 
 const API_BASE = 'https://contactadd.onrender.com';
 
@@ -245,35 +246,39 @@ function App() {
 
           <div className="action-stack">
             {!isVaultActive ? (
-              <div className="manual-payment-box" style={{ padding: '15px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', width: '100%', textAlign: 'center' }}>
+              <div className="manual-payment-box" style={{ padding: '15px', borderRadius: '8px', width: '100%', textAlign: 'center' }}>
                 <p style={{ marginBottom: '8px', fontSize: '14px' }}>
                   Scan QR code or Pay <b>₹{totalPrice}</b> to UPI ID: <br/>
-                  <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: '4px', userSelect: 'all' }}>your-upi-id@paytm</code>
+                  <code style={{  padding: '2px 6px', borderRadius: '4px', userSelect: 'all' }}>sachinkatkar1976@okaxis</code>
                 </p>
                 
                 {/* QR Code Placeholder Box */}
-                <div style={{ width: '140px', height: '140px', background: '#222', margin: '10px auto', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed #555', borderRadius: '8px', color: '#aaa', fontSize: '12px' }}>
-                  [ Your UPI QR Code ]
-                </div>
+                <div style={{ margin: '10px auto', textAlign: 'center' }}>
+  <img 
+    src={QR} 
+    alt="UPI QR Code" 
+    style={{ width: '150px', height: '150px', borderRadius: '8px', border: '1px solid #444' }} 
+  />
+</div>
 
                 <div style={{ textAlign: 'left', marginTop: '12px' }}>
-                  <label style={{ fontSize: '13px', color: '#ccc', display: 'block', marginBottom: '5px' }}>Upload Payment Screenshot:</label>
+                  <label style={{ fontSize: '13px', color: 'black', display: 'block', marginBottom: '5px' }}>Upload Payment Screenshot:</label>
                   <input 
                     type="file" 
                     accept="image/*" 
                     onChange={(e) => setScreenshotName(e.target.files?.[0]?.name || '')}
-                    style={{ width: '100%', padding: '6px', fontSize: '12px', background: '#111', border: '1px solid #444', borderRadius: '6px', color: '#fff', marginBottom: '10px' }}
+                    style={{ width: '100%', padding: '6px', fontSize: '12px', border: '1px solid #444', borderRadius: '6px', color: '#fff', marginBottom: '10px' }}
                   />
                   {screenshotName && <small style={{ color: '#4ade80', display: 'block', marginBottom: '8px' }}>Attached: {screenshotName}</small>}
 
-                  <label style={{ fontSize: '13px', color: '#ccc', display: 'block', marginBottom: '5px' }}>Enter 12-Digit UPI Transaction ID (UTR):</label>
+                  <label style={{ fontSize: '13px', color: 'black', display: 'block', marginBottom: '5px' }}>Enter 12-Digit UPI Transaction ID (UTR):</label>
                   <input 
                     type="text" 
                     placeholder="e.g. 412345678912" 
                     maxLength={12}
                     value={utrNumber} 
                     onChange={(e) => setUtrNumber(e.target.value.replace(/\D/g, ''))}
-                    style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #444', background: '#111', color: '#fff', letterSpacing: '2px', textAlign: 'center', fontSize: '16px' }}
+                    style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #444', color: '#fff', letterSpacing: '2px', textAlign: 'center', fontSize: '16px' }}
                   />
                 </div>
 
