@@ -3,8 +3,6 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-const axios = require('axios');
 require('dotenv').config();
 const User = require('./models/User');
 const ContactVault = require('./models/ContactVault');
@@ -61,78 +59,35 @@ app.post('/api/login', asyncRoute(async (req, res) => {
   res.json({ success: true, username: user.username, token: issueToken(user) });
 }));
 
-// --- PHONEPE PAYMENT INTEGRATION ---
-const PHONEPE_HOST_URL = process.env.PHONEPE_ENV === 'PRODUCTION'
-  ? 'https://api.phonepe.com/apis/hermes'
-  : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
-
-app.post('/api/pay/initiate', requireAuth, asyncRoute(async (req, res) => {
-  const { retentionDays } = req.body;
+// --- INSTANT 12-DIGIT UTR VALIDATION & ACTIVATION ---
+app.post('/api/pay/verify-utr', requireAuth, asyncRoute(async (req, res) => {
+  const { retentionDays, utrNumber } = req.body;
   if (!validRetentionDays(retentionDays)) return res.status(400).json({ error: 'Choose a valid number of days (1 to 3650).' });
   
-  const amountInPaisa = retentionDays * 20 * 100; // ₹20 per day in paisa
-  const merchantTransactionId = 'TXN_' + Date.now();
+  const cleanUtr = typeof utrNumber === 'string' ? utrNumber.trim() : '';
   
-  const payload = {
-    merchantId: process.env.PHONEPE_MERCHANT_ID,
-    merchantTransactionId: merchantTransactionId,
-    merchantUserId: req.auth.sub,
-    amount: amountInPaisa,
-    redirectUrl: `${req.protocol}://${req.get('host')}/api/pay/redirect?id=${merchantTransactionId}&days=${retentionDays}&userId=${req.auth.sub}`,
-    redirectMode: 'POST',
-    paymentInstrument: { type: 'PAY_PAGE' }
-  };
-
-  const bufferString = Buffer.from(JSON.stringify(payload)).toString('base64');
-  const stringToSign = bufferString + '/pg/v1/pay' + process.env.PHONEPE_SALT_KEY;
-  const sha256 = crypto.createHash('sha256').update(stringToSign).digest('hex');
-  const xVerify = sha256 + '###' + process.env.PHONEPE_SALT_INDEX;
-
-  try {
-    const response = await axios.post(`${PHONEPE_HOST_URL}/pg/v1/pay`, { request: bufferString }, {
-      headers: { 'Content-Type': 'application/json', 'X-VERIFY': xVerify }
-    });
-
-    if (response.data && response.data.success) {
-      const paymentUrl = response.data.data.instrumentResponse.redirectInfo.url;
-      return res.json({ success: true, paymentUrl });
-    } else {
-      return res.status(400).json({ error: response.data.message || 'Payment initialization failed.' });
-    }
-  } catch (error) {
-    console.error('PhonePe Error:', error.response?.data || error.message);
-    return res.status(500).json({ error: 'Could not connect to PhonePe payment gateway.' });
+  // Strict 12-digit UTR check
+  const isTwelveDigits = /^\d{12}$/.test(cleanUtr);
+  if (!isTwelveDigits) {
+    return res.status(400).json({ error: 'Payment Failed: A valid UPI transaction ID (UTR) must be exactly 12 digits.' });
   }
-}));
 
-app.post('/api/pay/redirect', asyncRoute(async (req, res) => {
-  const { days, userId } = req.query;
-  const status = req.body.code || req.query.code;
-  
-  const clientFrontendUrl = process.env.FRONTEND_URL || 'https://contactadd.onrender.com';
+  const expiresAt = new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000);
+  const vault = await ContactVault.findOneAndUpdate(
+    { userId: req.auth.sub },
+    { $set: { expiresAt },$setOnInsert: { contacts: [] } },
+    { upsert: true, new: true }
+  );
 
-  if (status === 'PAYMENT_SUCCESS' && userId && days) {
-    const retentionDaysNum = Number(days);
-    const expiresAt = new Date(Date.now() + retentionDaysNum * 24 * 60 * 60 * 1000);
-    
-    await ContactVault.findOneAndUpdate(
-      { userId },
-      { $set: { expiresAt },$setOnInsert: { contacts: [] } },
-      { upsert: true, new: true }
-    );
-    return res.redirect(`${clientFrontendUrl}?payment=success&days=${days}`);
-  } else {
-    return res.redirect(`${clientFrontendUrl}?payment=failed`);
-  }
+  res.json({ success: true, expiresAt: vault.expiresAt, message: 'Payment verified successfully!' });
 }));
-// -----------------------------------
 
 app.post('/api/sync-contacts', requireAuth, asyncRoute(async (req, res) => {
   const { contacts } = req.body;
   const vaultCheck = await ContactVault.findOne({ userId: req.auth.sub });
   
   if (!vaultCheck || !vaultCheck.expiresAt || vaultCheck.expiresAt <= new Date()) {
-    return res.status(403).json({ error: 'Your storage plan has expired. Please make a payment to store contacts.' });
+    return res.status(403).json({ error: 'Your storage plan has expired. Please activate your vault to continue.' });
   }
   if (!validContacts(contacts)) return res.status(400).json({ error: 'Contacts must contain valid name, tel, and email lists.' });
 
@@ -153,7 +108,6 @@ app.get('/api/get-contacts/:username', requireAuth, asyncRoute(async (req, res) 
   
   const vault = await ContactVault.findOne({ userId: req.auth.sub });
   
-  // If expired, securely delete ONLY the contact vault records while leaving the User account/password safe
   if (vault && vault.expiresAt && vault.expiresAt <= new Date()) {
     await ContactVault.deleteOne({ _id: vault._id });
     return res.json({ success: true, contacts: [], expiresAt: null, expired: true });

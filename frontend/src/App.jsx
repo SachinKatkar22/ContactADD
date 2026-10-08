@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
 const API_BASE = 'https://contactadd.onrender.com';
 
@@ -85,17 +85,8 @@ function App() {
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState(null);
   const [contactCount, setContactCount] = useState(null);
-
-  useEffect(() => {
-    const queryParams = new URLSearchParams(window.location.search);
-    if (queryParams.get('payment') === 'success') {
-      setNotice({ kind: 'success', message: 'Payment successful! Your vault is now active.' });
-      window.history.replaceState({}, document.title, window.location.pathname);
-    } else if (queryParams.get('payment') === 'failed') {
-      setNotice({ kind: 'error', message: 'Payment failed or was cancelled.' });
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-  }, []);
+  const [utrNumber, setUtrNumber] = useState('');
+  const [screenshotName, setScreenshotName] = useState('');
 
   const announce = (kind, message) => setNotice({ kind, message });
   const run = async (key, action) => {
@@ -139,7 +130,7 @@ function App() {
   };
 
   const syncContacts = () => run('sync', async () => {
-    if (!isVaultActive) throw new Error('Your storage plan has expired. Please pay to renew.');
+    if (!isVaultActive) throw new Error('Your storage plan has expired. Please activate your vault to continue.');
     if (!window.isSecureContext) throw new Error('Open the HTTPS version of this site to use phone contacts.');
     if (window.top !== window.self) throw new Error('Open this app as a normal page, not inside an embedded frame.');
     if (!('contacts' in navigator) || !('ContactsManager' in window) || typeof navigator.contacts?.select !== 'function') {
@@ -162,7 +153,7 @@ function App() {
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) return announce('error', 'That contact file is larger than 8 MB. Export a smaller set and try again.');
     return run('import', async () => {
-      if (!isVaultActive) throw new Error('Your storage plan has expired. Please pay to renew.');
+      if (!isVaultActive) throw new Error('Your storage plan has expired. Please activate your vault to continue.');
       const contacts = parseVCardFile(await file.text());
       if (!contacts.length) throw new Error('No contacts were found. Choose a valid .vcf contacts export.');
       await saveContacts(contacts);
@@ -179,27 +170,33 @@ function App() {
     setContactCount(data.contacts.length); setExpiresAt(data.expiresAt); announce('success', `Exported ${data.contacts.length} contacts as a vCard file.`);
   });
 
-  const payWithPhonePe = () => run('pay', async () => {
+  const handleVerifyUtr = () => run('verify', async () => {
     const days = requireRetention();
-    const data = await request('/api/pay/initiate', {
-      method: 'POST', body: JSON.stringify({ retentionDays: days })
-    }, sessionToken);
-    if (data.paymentUrl) {
-      window.location.href = data.paymentUrl;
-    } else {
-      throw new Error('Failed to retrieve PhonePe payment URL.');
+    const cleanUtr = utrNumber.trim();
+    
+    if (!/^\d{12}$/.test(cleanUtr)) {
+      throw new Error('Payment Failed: A valid UPI transaction ID (UTR) must be exactly 12 digits.');
     }
+
+    const data = await request('/api/pay/verify-utr', {
+      method: 'POST', body: JSON.stringify({ retentionDays: days, utrNumber: cleanUtr })
+    }, sessionToken);
+    
+    setExpiresAt(data.expiresAt);
+    setUtrNumber('');
+    setScreenshotName('');
+    announce('success', `Payment Success! Vault activated for ${days} days.`);
   });
 
-  const signOut = () => { setCurrentUser(''); setSessionToken(''); setContactCount(null); setExpiresAt(null); setNotice(null); };
-  const expirationLabel = isVaultActive ? `Active until: ${new Date(expiresAt).toLocaleString()}` : 'Vault expired or inactive. Please pay to store contacts.';
+  const signOut = () => { setCurrentUser(''); setSessionToken(''); setContactCount(null); setExpiresAt(null); setNotice(null); setUtrNumber(''); setScreenshotName(''); };
+  const expirationLabel = isVaultActive ? `Active until: ${new Date(expiresAt).toLocaleString()}` : 'Vault expired or inactive. Scan QR, pay, upload screenshot & enter 12-digit UTR.';
 
   return <main className="page-shell">
     <header className="topbar"><a className="brand" href="#top" aria-label="Kinship home"><span className="brand-mark"><Icon name="user" size={19}/></span><span>kinship<span className="brand-dot">.</span></span></a><div className="topbar-note"><span className="secure-dot"/> Private by design</div></header>
     <div className="layout" id="top">
       <section className="intro"><div className="eyebrow"><span/> CONTACTS, WHEREVER YOU GO</div><h1>Your people,<br/><em>always close.</em></h1><p className="intro-copy">Keep a safe copy of your contacts and take them with you when you move to a new device.</p>
         <div className="feature-list"><div className="feature"><span className="feature-icon"><Icon name="shield"/></span><span><b>Your contacts stay yours</b><small>Sync only the contacts you choose.</small></span></div><div className="feature"><span className="feature-icon"><Icon name="sync"/></span><span><b>Move in a few taps</b><small>Select contacts or import a single file.</small></span></div></div>
-        <div className="privacy-note"><Icon name="lock" size={17}/><span>Plans cost ₹20 per day. Days are locked during active periods.</span></div>
+        <div className="privacy-note"><Icon name="lock" size={17}/><span>₹20 per day. Instant 12-digit UTR verification.</span></div>
       </section>
       <section className="panel-wrap" aria-label="Contact vault">
         {!currentUser ? <form className="panel" onSubmit={handleAuth}>
@@ -213,7 +210,7 @@ function App() {
           <button className="auth-toggle" type="button" onClick={toggleAuthMode}>{authMode === 'register' ? 'Already have an account? Sign in' : 'New here? Create an account'}</button>
         </form> : <div className="panel">
           <div className="panel-heading"><span className="step-label">YOUR VAULT</span><button className="text-button" type="button" onClick={signOut}>Sign out</button></div>
-          <h2>Hi, {currentUser}</h2><p className="panel-copy">Set your retention period (₹20/day) and complete payment to unlock contact storage.</p>
+          <h2>Hi, {currentUser}</h2><p className="panel-copy">Set your storage duration and complete payment.</p>
           
           <div className="retention-card">
             <label className="field-label" htmlFor="retention-days">Store contacts for (₹20 / day)</label>
@@ -241,16 +238,49 @@ function App() {
           <div className="vault-ready">
             <span className="active-check"><Icon name={isVaultActive ? 'check' : 'lock'} size={16}/></span>
             <div>
-              <b>{isVaultActive ? `${contactCount ?? 0} contacts in your vault` : 'Vault Payment Required'}</b>
+              <b>{isVaultActive ? `${contactCount ?? 0} contacts in your vault` : 'Scan QR & Verify Payment'}</b>
               <small>{expirationLabel}</small>
             </div>
           </div>
 
           <div className="action-stack">
             {!isVaultActive ? (
-              <button className="button button-primary" type="button" disabled={Boolean(busy)} onClick={payWithPhonePe}>
-                {busy === 'pay' ? <><span className="spinner"/> Redirecting to PhonePe…</> : <><Icon name="card"/> Pay ₹{totalPrice} with PhonePe</>}
-              </button>
+              <div className="manual-payment-box" style={{ padding: '15px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', width: '100%', textAlign: 'center' }}>
+                <p style={{ marginBottom: '8px', fontSize: '14px' }}>
+                  Scan QR code or Pay <b>₹{totalPrice}</b> to UPI ID: <br/>
+                  <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: '4px', userSelect: 'all' }}>your-upi-id@paytm</code>
+                </p>
+                
+                {/* QR Code Placeholder Box */}
+                <div style={{ width: '140px', height: '140px', background: '#222', margin: '10px auto', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed #555', borderRadius: '8px', color: '#aaa', fontSize: '12px' }}>
+                  [ Your UPI QR Code ]
+                </div>
+
+                <div style={{ textAlign: 'left', marginTop: '12px' }}>
+                  <label style={{ fontSize: '13px', color: '#ccc', display: 'block', marginBottom: '5px' }}>Upload Payment Screenshot:</label>
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    onChange={(e) => setScreenshotName(e.target.files?.[0]?.name || '')}
+                    style={{ width: '100%', padding: '6px', fontSize: '12px', background: '#111', border: '1px solid #444', borderRadius: '6px', color: '#fff', marginBottom: '10px' }}
+                  />
+                  {screenshotName && <small style={{ color: '#4ade80', display: 'block', marginBottom: '8px' }}>Attached: {screenshotName}</small>}
+
+                  <label style={{ fontSize: '13px', color: '#ccc', display: 'block', marginBottom: '5px' }}>Enter 12-Digit UPI Transaction ID (UTR):</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. 412345678912" 
+                    maxLength={12}
+                    value={utrNumber} 
+                    onChange={(e) => setUtrNumber(e.target.value.replace(/\D/g, ''))}
+                    style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #444', background: '#111', color: '#fff', letterSpacing: '2px', textAlign: 'center', fontSize: '16px' }}
+                  />
+                </div>
+
+                <button className="button button-primary" type="button" disabled={Boolean(busy)} onClick={handleVerifyUtr}>
+                  {busy === 'verify' ? <><span className="spinner"/> Verifying UTR…</> : <><Icon name="card"/> Verify & Activate Vault</>}
+                </button>
+              </div>
             ) : (
               <>
                 <button className="button button-primary" type="button" disabled={Boolean(busy)} onClick={syncContacts}>
@@ -268,10 +298,19 @@ function App() {
           </div>
         </div>}
         {notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'} aria-live="polite">{notice.kind === 'success' ? <Icon name="check" size={17}/> : <span className="notice-mark">{notice.kind === 'error' ? '!' : 'i'}</span>}<span>{notice.message}</span></div>}
-        <div className="support-note">Need help? <a href="mailto:support@example.com">Contact support <Icon name="arrow" size={13}/></a></div>
+        
+        <div className="support-note" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+          <span>Developed by <b>Sachin Katkar</b> <small style={{ color: '#888' }}>(Govt. College of Engineering, Amravati)</small></span>
+          <a href="mailto:support@example.com">Contact Developer <Icon name="arrow" size={13}/></a>
+        </div>
       </section>
     </div>
-    <footer><span>© 2026 Kinship</span><span>Made for the moments between phones.</span><span><Icon name="lock" size={13}/> Your contacts, your choice</span></footer>
+    
+    <footer>
+      <span>© 2026 Kinship • Built during Bluestock Fintech Internship Journey</span>
+      <span>EXTC Engineering Project</span>
+      <span><Icon name="lock" size={13}/> Secure Data Vault</span>
+    </footer>
   </main>;
 }
 
