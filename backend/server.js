@@ -10,6 +10,7 @@ const ContactVault = require('./models/ContactVault');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const validUsername = (value) => typeof value === 'string' && /^[\p{L}\p{N}_.-]{3,40}$/u.test(value.trim());
@@ -58,39 +59,61 @@ app.post('/api/login', asyncRoute(async (req, res) => {
   res.json({ success: true, username: user.username, token: issueToken(user) });
 }));
 
-// Kept only so older clients fail safely; no payment is processed or plan activated.
-app.post('/api/pay-and-set-days', (req, res) => {
-  res.status(501).json({ error: 'Online payments are not configured. No payment was taken and no plan was activated.' });
-});
-
-app.post('/api/sync-contacts', requireAuth, asyncRoute(async (req, res) => {
-  const { contacts, retentionDays } = req.body;
-  if (!validContacts(contacts)) return res.status(400).json({ error: 'Contacts must contain valid name, tel, and email lists.' });
-  if (!validRetentionDays(retentionDays)) return res.status(400).json({ error: 'Choose a retention period from 1 to 3650 days.' });
+// --- INSTANT 12-DIGIT UTR VALIDATION & ACTIVATION ---
+app.post('/api/pay/verify-utr', requireAuth, asyncRoute(async (req, res) => {
+  const { retentionDays, utrNumber } = req.body;
+  if (!validRetentionDays(retentionDays)) return res.status(400).json({ error: 'Choose a valid number of days (1 to 3650).' });
+  
+  const cleanUtr = typeof utrNumber === 'string' ? utrNumber.trim() : '';
+  
+  // Strict 12-digit UTR check
+  const isTwelveDigits = /^\d{12}$/.test(cleanUtr);
+  if (!isTwelveDigits) {
+    return res.status(400).json({ error: 'Payment Failed: A valid UPI transaction ID (UTR) must be exactly 12 digits.' });
+  }
 
   const expiresAt = new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000);
+  const vault = await ContactVault.findOneAndUpdate(
+    { userId: req.auth.sub },
+    { $set: { expiresAt },$setOnInsert: { contacts: [] } },
+    { upsert: true, new: true }
+  );
+
+  res.json({ success: true, expiresAt: vault.expiresAt, message: 'Payment verified successfully!' });
+}));
+
+app.post('/api/sync-contacts', requireAuth, asyncRoute(async (req, res) => {
+  const { contacts } = req.body;
+  const vaultCheck = await ContactVault.findOne({ userId: req.auth.sub });
+  
+  if (!vaultCheck || !vaultCheck.expiresAt || vaultCheck.expiresAt <= new Date()) {
+    return res.status(403).json({ error: 'Your storage plan has expired. Please activate your vault to continue.' });
+  }
+  if (!validContacts(contacts)) return res.status(400).json({ error: 'Contacts must contain valid name, tel, and email lists.' });
+
   const vault = await ContactVault.findOneAndUpdate(
     { userId: req.auth.sub },
     {
       $set: {
         contacts: contacts.map((contact) => ({ name: contact.name || [], tel: contact.tel || [], email: contact.email || [] })),
-        expiresAt,
-      },
-      $setOnInsert: { userId: req.auth.sub },
+      }
     },
-    { new: true, upsert: true, runValidators: true },
+    { new: true, runValidators: true },
   );
   res.json({ success: true, count: vault.contacts.length, expiresAt: vault.expiresAt });
 }));
 
 app.get('/api/get-contacts/:username', requireAuth, asyncRoute(async (req, res) => {
   if (req.params.username !== req.auth.username) return res.status(403).json({ error: 'You can only access your own contacts.' });
+  
   const vault = await ContactVault.findOne({ userId: req.auth.sub });
-  if (vault && vault.expiresAt <= new Date()) {
+  
+  if (vault && vault.expiresAt && vault.expiresAt <= new Date()) {
     await ContactVault.deleteOne({ _id: vault._id });
-    return res.json({ success: true, contacts: [], expiresAt: null });
+    return res.json({ success: true, contacts: [], expiresAt: null, expired: true });
   }
-  res.json({ success: true, contacts: vault?.contacts || [], expiresAt: vault?.expiresAt || null });
+  
+  res.json({ success: true, contacts: vault?.contacts || [], expiresAt: vault?.expiresAt || null, expired: false });
 }));
 
 app.use((error, req, res, next) => {
